@@ -3,7 +3,14 @@ package capture
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"sort"
+)
+
+var (
+	hexKeyPattern  = regexp.MustCompile(`^[0-9a-fA-F]{8,}$`)
+	uuidKeyPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	numericKey     = regexp.MustCompile(`^\d+$`)
 )
 
 // InferSchema produces a JSON Schema from a decoded JSON value.
@@ -43,6 +50,19 @@ func InferSchema(v any) map[string]any {
 		return result
 
 	case map[string]any:
+		// Detect dynamic map keys (hashes, UUIDs, numeric IDs).
+		// If most keys look like dynamic identifiers, emit additionalProperties
+		// instead of treating each key as a fixed property.
+		if len(val) > 1 && isDynamicMap(val) {
+			// Infer value schema from first value
+			for _, child := range val {
+				return map[string]any{
+					"type":                 "object",
+					"additionalProperties": InferSchema(child),
+				}
+			}
+		}
+
 		properties := make(map[string]any, len(val))
 		required := make([]string, 0, len(val))
 		for k, child := range val {
@@ -59,6 +79,18 @@ func InferSchema(v any) map[string]any {
 	default:
 		return map[string]any{"type": "unknown"}
 	}
+}
+
+// isDynamicMap returns true if the object keys look like dynamic identifiers
+// (hex hashes, UUIDs, numeric IDs) rather than fixed property names.
+func isDynamicMap(m map[string]any) bool {
+	dynamicCount := 0
+	for k := range m {
+		if hexKeyPattern.MatchString(k) || uuidKeyPattern.MatchString(k) || numericKey.MatchString(k) {
+			dynamicCount++
+		}
+	}
+	return float64(dynamicCount)/float64(len(m)) > 0.5
 }
 
 // InferSchemaFromBytes parses JSON bytes and infers a schema.

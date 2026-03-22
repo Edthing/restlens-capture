@@ -170,6 +170,100 @@ func TestInferSchema_DeeplyNested(t *testing.T) {
 	assertType(t, valueSchema, "integer")
 }
 
+func TestInferSchema_DynamicMapKeys_Hex(t *testing.T) {
+	obj := map[string]any{
+		"1a3a47d655db77ed84ba39753dc4c51f": map[string]any{"count": json.Number("3")},
+		"2e604917cb1314a5d4f6eda548a97c50": map[string]any{"count": json.Number("5")},
+		"ff00aa11bb22cc33dd44ee55ff66aa77": map[string]any{"count": json.Number("1")},
+	}
+	schema := InferSchema(obj)
+	assertType(t, schema, "object")
+
+	// Should use additionalProperties, not properties
+	if _, hasProps := schema["properties"]; hasProps {
+		t.Error("expected additionalProperties for dynamic hex keys, got properties")
+	}
+	addlProps, ok := schema["additionalProperties"].(map[string]any)
+	if !ok {
+		t.Fatal("expected additionalProperties to be a schema")
+	}
+	assertType(t, addlProps, "object")
+}
+
+func TestInferSchema_DynamicMapKeys_UUID(t *testing.T) {
+	obj := map[string]any{
+		"550e8400-e29b-41d4-a716-446655440000": "val1",
+		"6ba7b810-9dad-11d1-80b4-00c04fd430c8": "val2",
+	}
+	schema := InferSchema(obj)
+
+	if _, hasProps := schema["properties"]; hasProps {
+		t.Error("expected additionalProperties for UUID keys, got properties")
+	}
+	addlProps, ok := schema["additionalProperties"].(map[string]any)
+	if !ok {
+		t.Fatal("expected additionalProperties")
+	}
+	assertType(t, addlProps, "string")
+}
+
+func TestInferSchema_DynamicMapKeys_Numeric(t *testing.T) {
+	obj := map[string]any{
+		"12345": map[string]any{"name": "a"},
+		"67890": map[string]any{"name": "b"},
+		"11111": map[string]any{"name": "c"},
+	}
+	schema := InferSchema(obj)
+
+	if _, hasProps := schema["properties"]; hasProps {
+		t.Error("expected additionalProperties for numeric keys")
+	}
+	if _, ok := schema["additionalProperties"]; !ok {
+		t.Error("expected additionalProperties")
+	}
+}
+
+func TestInferSchema_StaticMapKeys_NotDynamic(t *testing.T) {
+	obj := map[string]any{
+		"name":  "test",
+		"email": "foo@bar.com",
+		"age":   json.Number("25"),
+	}
+	schema := InferSchema(obj)
+
+	// Normal property names should stay as properties
+	if _, hasProps := schema["properties"]; !hasProps {
+		t.Error("expected properties for static keys")
+	}
+	if _, hasAddl := schema["additionalProperties"]; hasAddl {
+		t.Error("should not have additionalProperties for static keys")
+	}
+}
+
+func TestInferSchema_MixedKeys_MostlyDynamic(t *testing.T) {
+	obj := map[string]any{
+		"aabbccdd11223344": map[string]any{"v": json.Number("1")},
+		"eeff001122334455": map[string]any{"v": json.Number("2")},
+		"total":            json.Number("3"),
+	}
+	// 2/3 keys are hex = >50%, should be treated as dynamic
+	schema := InferSchema(obj)
+	if _, hasAddl := schema["additionalProperties"]; !hasAddl {
+		t.Error("expected additionalProperties when majority of keys are dynamic")
+	}
+}
+
+func TestInferSchema_SingleKey_NotDynamic(t *testing.T) {
+	// Single-key objects should never be treated as dynamic maps
+	obj := map[string]any{
+		"aabbccdd11223344": "value",
+	}
+	schema := InferSchema(obj)
+	if _, hasProps := schema["properties"]; !hasProps {
+		t.Error("single-key object should use properties, not additionalProperties")
+	}
+}
+
 func TestInferSchema_LargeObject(t *testing.T) {
 	obj := make(map[string]any, 100)
 	for i := 0; i < 100; i++ {
