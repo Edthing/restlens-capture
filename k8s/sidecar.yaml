@@ -1,0 +1,83 @@
+# restlens-capture sidecar in proxy mode
+#
+# How it works:
+#   1. External traffic hits port 9000 (the proxy)
+#   2. restlens-capture forwards to your app on localhost:8080
+#   3. Captures request/response metadata for 2xx responses only
+#   4. Non-2xx traffic is forwarded but not stored
+#
+# Production safety:
+#   - Circuit breaker: if capture fails repeatedly, proxy degrades to
+#     dumb passthrough — traffic still flows, capture pauses
+#   - Panic recovery: schema inference panics are caught and recovered,
+#     never affecting the proxied response
+#   - Non-blocking: capture writes to a buffered channel; if full,
+#     exchanges are dropped rather than blocking requests
+#   - Body limits: request/response bodies >10MB skip schema inference
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app-with-capture
+  labels:
+    app: my-app
+spec:
+  containers:
+    # Your application container
+    - name: app
+      image: my-app:latest
+      ports:
+        - containerPort: 8080
+
+    # restlens-capture sidecar (proxy mode)
+    - name: restlens-capture
+      image: ghcr.io/edthing/restlens-capture:latest
+      args:
+        - proxy
+        - --target=http://localhost:8080
+        - --port=9000
+        - --db=/data/restlens-capture.db
+      ports:
+        - containerPort: 9000
+          name: proxy
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 9000
+        initialDelaySeconds: 2
+        periodSeconds: 10
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 9000
+        initialDelaySeconds: 1
+        periodSeconds: 5
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      volumeMounts:
+        - name: capture-data
+          mountPath: /data
+
+  volumes:
+    - name: capture-data
+      emptyDir:
+        sizeLimit: 500Mi
+
+---
+# Route traffic to the proxy port, not the app port directly
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+spec:
+  selector:
+    app: my-app
+  ports:
+    - port: 80
+      targetPort: 9000
+      name: http
