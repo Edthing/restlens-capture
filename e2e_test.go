@@ -196,13 +196,29 @@ func TestE2E_CaptureAndReport(t *testing.T) {
 		t.Fatalf("invalid OpenAPI YAML: %v", err)
 	}
 
-	// Verify paths exist
+	// Verify paths exist — and specifically that static routes at the same
+	// depth (/api/users, /api/health) did NOT get merged into a single entry.
+	// A "len(paths) > 0" assertion would have missed the original merging bug.
 	paths, ok := parsedYAML["paths"].(map[string]any)
 	if !ok {
 		t.Fatal("expected paths in OpenAPI spec")
 	}
-	if len(paths) == 0 {
-		t.Error("expected at least 1 path in OpenAPI spec")
+	wantPaths := []string{"/api/users", "/api/users/{id}", "/api/health"}
+	for _, wp := range wantPaths {
+		if _, ok := paths[wp]; !ok {
+			got := make([]string, 0, len(paths))
+			for p := range paths {
+				got = append(got, p)
+			}
+			t.Errorf("missing expected path %q. got: %v", wp, got)
+		}
+	}
+	if len(paths) != len(wantPaths) {
+		got := make([]string, 0, len(paths))
+		for p := range paths {
+			got = append(got, p)
+		}
+		t.Errorf("expected exactly %d paths, got %d: %v", len(wantPaths), len(paths), got)
 	}
 
 	// 8. Verify SQLite file exists on disk
