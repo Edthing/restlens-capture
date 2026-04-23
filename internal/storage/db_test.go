@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +44,84 @@ func TestOpenDB_InvalidPath(t *testing.T) {
 	_, err := OpenDB("/nonexistent/deep/path/test.db")
 	if err == nil {
 		t.Fatal("expected error for invalid path")
+	}
+	// Must NOT be the misleading modernc message. Must point at the real cause.
+	msg := err.Error()
+	if !strings.Contains(msg, "does not exist") {
+		t.Errorf("expected actionable 'does not exist' message, got: %v", err)
+	}
+	if strings.Contains(msg, "out of memory") {
+		t.Errorf("error message still contains the misleading 'out of memory' phrase from modernc/sqlite: %v", err)
+	}
+}
+
+func TestOpenDB_EmptyPath(t *testing.T) {
+	_, err := OpenDB("")
+	if err == nil {
+		t.Fatal("expected error for empty path")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("expected message mentioning empty path, got: %v", err)
+	}
+}
+
+func TestOpenDB_ParentIsFile(t *testing.T) {
+	dir := t.TempDir()
+	// Create a regular file, then try to use it as if it were a parent directory.
+	fakeParent := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(fakeParent, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := OpenDB(filepath.Join(fakeParent, "capture.db"))
+	if err == nil {
+		t.Fatal("expected error when parent is a file")
+	}
+	// Either the stat fails (ENOTDIR) or our explicit check fires — both are fine,
+	// as long as the message isn't the misleading SQLite one.
+	if strings.Contains(err.Error(), "out of memory") {
+		t.Errorf("error leaked misleading 'out of memory' phrase: %v", err)
+	}
+}
+
+func TestOpenDB_UnwritableDirectory(t *testing.T) {
+	// Can't reliably test permission denial as root — chmod is a no-op for root.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; chmod-based permission test would be meaningless")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) }) // so t.TempDir cleanup works
+
+	_, err := OpenDB(filepath.Join(dir, "capture.db"))
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "write permission") && !strings.Contains(msg, "not writable") {
+		t.Errorf("expected a permission-oriented message, got: %v", err)
+	}
+	if strings.Contains(msg, "out of memory") {
+		t.Errorf("error leaked misleading 'out of memory' phrase: %v", err)
+	}
+}
+
+func TestOpenDB_NotADatabase(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "bogus.db")
+	// Write something that's definitely not a SQLite header.
+	if err := os.WriteFile(dbPath, []byte("this is not a SQLite database, just text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := OpenDB(dbPath)
+	if err == nil {
+		t.Fatal("expected error when file is not a database")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not a SQLite database") {
+		t.Errorf("expected 'not a SQLite database' message, got: %v", err)
 	}
 }
 
