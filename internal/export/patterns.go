@@ -13,16 +13,18 @@ var (
 	hexPattern     = regexp.MustCompile(`^[0-9a-fA-F]{16,}$`)
 )
 
-// endpointKey is method + path pattern.
-type endpointKey struct {
-	Method  string
-	Pattern string
-}
-
 // GroupPatterns takes captured exchanges and groups them by inferred path patterns.
 // Returns a map from (method, pattern) to the list of original paths.
+//
+// Each path is normalized per-segment: segments that look like IDs (numeric,
+// UUID, or long hex) become {id}, every other segment is preserved verbatim.
+// Paths that normalize to the same pattern are grouped; paths that don't are
+// kept as separate operations. This is intentionally conservative — it's fine
+// to under-group (two operations that could have been one) but never fine to
+// over-group (merging genuinely distinct routes into a single operation),
+// because over-grouping causes silent data loss in the exported spec.
 func GroupPatterns(exchanges []capture.CapturedExchange) map[string][]string {
-	// Collect unique (method, path) pairs
+	// Collect unique (method, path) pairs, preserving first-seen order.
 	type methodPath struct {
 		method string
 		path   string
@@ -37,54 +39,12 @@ func GroupPatterns(exchanges []capture.CapturedExchange) map[string][]string {
 		}
 	}
 
-	// Group by (method, segment count)
-	type groupKey struct {
-		method   string
-		segCount int
-	}
-	groups := make(map[groupKey][]string)
-	for _, mp := range paths {
-		segs := splitPath(mp.path)
-		gk := groupKey{mp.method, len(segs)}
-		groups[gk] = append(groups[gk], mp.path)
-	}
-
-	// For each group, detect parameterized segments
 	result := make(map[string][]string)
-	for gk, groupPaths := range groups {
-		if len(groupPaths) == 1 {
-			pattern := normalizePath(groupPaths[0])
-			key := gk.method + " " + pattern
-			result[key] = groupPaths
-			continue
-		}
-
-		segCount := gk.segCount
-		segments := make([][]string, segCount)
-		for _, p := range groupPaths {
-			segs := splitPath(p)
-			for i, s := range segs {
-				if i < segCount {
-					segments[i] = append(segments[i], s)
-				}
-			}
-		}
-
-		// Build pattern: replace high-cardinality ID-like segments
-		patternSegs := make([]string, segCount)
-		for i, segValues := range segments {
-			if isParameterizedSegment(segValues) {
-				patternSegs[i] = "{id}"
-			} else {
-				patternSegs[i] = segValues[0]
-			}
-		}
-
-		pattern := "/" + strings.Join(patternSegs, "/")
-		key := gk.method + " " + pattern
-		result[key] = groupPaths
+	for _, mp := range paths {
+		pattern := normalizePath(mp.path)
+		key := mp.method + " " + pattern
+		result[key] = append(result[key], mp.path)
 	}
-
 	return result
 }
 
@@ -113,33 +73,6 @@ func splitPath(path string) []string {
 		return nil
 	}
 	return strings.Split(path, "/")
-}
-
-func isParameterizedSegment(values []string) bool {
-	if len(values) <= 1 {
-		return false
-	}
-
-	// Check uniqueness
-	unique := make(map[string]bool)
-	for _, v := range values {
-		unique[v] = true
-	}
-
-	// Low cardinality = not a parameter
-	if len(unique) <= 2 {
-		return false
-	}
-
-	// Check if most values look like IDs
-	idCount := 0
-	for v := range unique {
-		if isLikelyID(v) {
-			idCount++
-		}
-	}
-
-	return float64(idCount)/float64(len(unique)) > 0.5
 }
 
 func isLikelyID(segment string) bool {

@@ -155,6 +155,124 @@ func TestGroupPatterns_RootPath(t *testing.T) {
 	}
 }
 
+func TestGroupPatterns_DistinctStaticEndpointsSameDepth(t *testing.T) {
+	// Regression test: a real app hits many distinct static endpoints at the
+	// same depth. Previously the grouper collapsed them into one pattern
+	// (picking segValues[0]) and the export showed "1 operation" no matter
+	// how long the app ran.
+	exchanges := makeExchanges(
+		"GET", "/api/login",
+		"GET", "/api/me",
+		"GET", "/api/feed",
+		"GET", "/api/settings",
+	)
+
+	patterns := GroupPatterns(exchanges)
+
+	wantKeys := []string{
+		"GET /api/login",
+		"GET /api/me",
+		"GET /api/feed",
+		"GET /api/settings",
+	}
+	for _, k := range wantKeys {
+		if _, ok := patterns[k]; !ok {
+			t.Errorf("expected pattern %q, got keys: %v", k, patternKeys(patterns))
+		}
+	}
+	if len(patterns) != len(wantKeys) {
+		t.Errorf("expected %d distinct patterns, got %d: %v", len(wantKeys), len(patterns), patternKeys(patterns))
+	}
+}
+
+func TestGroupPatterns_TwoDistinctStaticEndpoints(t *testing.T) {
+	// Minimal reproduction of the merge bug: just two different routes with
+	// the same depth and method.
+	exchanges := makeExchanges(
+		"GET", "/api/users",
+		"GET", "/api/health",
+	)
+
+	patterns := GroupPatterns(exchanges)
+
+	if _, ok := patterns["GET /api/users"]; !ok {
+		t.Errorf("expected GET /api/users, got keys: %v", patternKeys(patterns))
+	}
+	if _, ok := patterns["GET /api/health"]; !ok {
+		t.Errorf("expected GET /api/health, got keys: %v", patternKeys(patterns))
+	}
+	if len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %d: %v", len(patterns), patternKeys(patterns))
+	}
+}
+
+func TestGroupPatterns_DistinctCollectionsWithIDs(t *testing.T) {
+	// /users/{id} and /posts/{id} must remain separate operations even though
+	// they share method and segment count.
+	exchanges := makeExchanges(
+		"GET", "/users/123",
+		"GET", "/users/456",
+		"GET", "/users/789",
+		"GET", "/posts/111",
+		"GET", "/posts/222",
+		"GET", "/posts/333",
+	)
+
+	patterns := GroupPatterns(exchanges)
+
+	if _, ok := patterns["GET /users/{id}"]; !ok {
+		t.Errorf("expected GET /users/{id}, got keys: %v", patternKeys(patterns))
+	}
+	if _, ok := patterns["GET /posts/{id}"]; !ok {
+		t.Errorf("expected GET /posts/{id}, got keys: %v", patternKeys(patterns))
+	}
+	if len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %d: %v", len(patterns), patternKeys(patterns))
+	}
+}
+
+func TestGroupPatterns_TwoNumericIDsStillDetected(t *testing.T) {
+	// The old `len(unique) <= 2` guard meant two samples of an ID route
+	// failed to be detected as parameterized. With only two hits the
+	// export should still collapse to a single /users/{id} operation.
+	exchanges := makeExchanges(
+		"GET", "/users/123",
+		"GET", "/users/456",
+	)
+
+	patterns := GroupPatterns(exchanges)
+
+	if _, ok := patterns["GET /users/{id}"]; !ok {
+		t.Errorf("expected GET /users/{id}, got keys: %v", patternKeys(patterns))
+	}
+	if len(patterns) != 1 {
+		t.Errorf("expected 1 pattern, got %d: %v", len(patterns), patternKeys(patterns))
+	}
+}
+
+func TestGroupPatterns_StaticAndIDAtSameDepth(t *testing.T) {
+	// /users/me (static) and /users/123, /users/456 (IDs) should produce
+	// two patterns: /users/me and /users/{id}.
+	exchanges := makeExchanges(
+		"GET", "/users/me",
+		"GET", "/users/123",
+		"GET", "/users/456",
+		"GET", "/users/789",
+	)
+
+	patterns := GroupPatterns(exchanges)
+
+	if _, ok := patterns["GET /users/me"]; !ok {
+		t.Errorf("expected GET /users/me, got keys: %v", patternKeys(patterns))
+	}
+	if _, ok := patterns["GET /users/{id}"]; !ok {
+		t.Errorf("expected GET /users/{id}, got keys: %v", patternKeys(patterns))
+	}
+	if len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %d: %v", len(patterns), patternKeys(patterns))
+	}
+}
+
 func TestGroupPatterns_MultipleMethods(t *testing.T) {
 	exchanges := []capture.CapturedExchange{
 		{Method: "GET", Path: "/users/123"},
