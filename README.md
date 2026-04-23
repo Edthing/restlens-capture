@@ -5,15 +5,19 @@ API traffic capture sidecar for [REST Lens](https://restlens.com). Runs as a rev
 ## Quick Start
 
 ```bash
-# Run as a proxy in front of your API
+# 1. Start the proxy in front of your API
 restlens-capture proxy --target http://localhost:3000 --port 9000
 
-# View captured traffic
+# 2. Point your client at :9000 instead of :3000 and use the app normally
+
+# 3. See what was captured
 restlens-capture report
 
-# Export as OpenAPI 3.1
-restlens-capture export --openapi
+# 4. Export an OpenAPI 3.1 spec
+restlens-capture export --openapi -o api.yaml
 ```
+
+If you'd rather run this as a container, skip to [Run with Docker](#run-with-docker).
 
 ## How It Works
 
@@ -50,21 +54,9 @@ No PII, no secrets, no raw data — just types and shapes.
 
 ## Installation
 
-### Binary
-
-Download from [Releases](https://github.com/Edthing/restlens-capture/releases).
-
-### Docker
-
-```bash
-docker pull ghcr.io/edthing/restlens-capture:latest
-```
-
-### From Source
-
-```bash
-go install github.com/Edthing/restlens-capture@latest
-```
+- **Binary** — download from [Releases](https://github.com/Edthing/restlens-capture/releases)
+- **Docker** — `ghcr.io/edthing/restlens-capture:latest` (see [Run with Docker](#run-with-docker))
+- **From source** — `go install github.com/Edthing/restlens-capture@latest`
 
 ## Commands
 
@@ -118,6 +110,112 @@ Generates an OpenAPI 3.1 spec with:
 - Paths inferred from traffic patterns (`/users/123`, `/users/456` → `/users/{id}`)
 - Request/response schemas from captured body shapes
 - Observed status codes per endpoint
+
+## Run with Docker
+
+The published image's entrypoint is the binary — everything after the image name is a normal CLI invocation.
+
+```bash
+docker pull ghcr.io/edthing/restlens-capture:latest
+```
+
+You need to answer three things for every setup:
+
+1. **How does the proxy reach your backend?** — container name, `host.docker.internal`, or host networking
+2. **What port do your clients talk to?** — usually `-p 9000:9000` on the proxy container
+3. **Where does the SQLite DB live?** — mount a volume, otherwise captures vanish when the container stops
+
+### Backend running on your host
+
+Most common local setup: backend on host port 3000, you want the proxy on host port 9000, captures persisted under `./capture/`.
+
+```bash
+mkdir -p capture
+docker run --rm \
+  -p 9000:9000 \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$PWD/capture:/data" \
+  ghcr.io/edthing/restlens-capture:latest \
+  proxy \
+    --target=http://host.docker.internal:3000 \
+    --port=9000 \
+    --db=/data/capture.db
+```
+
+Point your client at `http://localhost:9000` instead of `:3000`.
+
+> **Linux shortcut** — drop the port mapping and use `--network host` instead; the proxy binds directly on host port 9000 and `--target=http://localhost:3000` just works:
+> ```bash
+> docker run --rm --network host \
+>   -v "$PWD/capture:/data" \
+>   ghcr.io/edthing/restlens-capture:latest \
+>   proxy --target=http://localhost:3000 --port=9000 --db=/data/capture.db
+> ```
+
+> **Volume permissions** — the image runs as UID 65532 (distroless nonroot). Named docker volumes (`-v rlc-data:/data`) work out of the box because the image exports `/data` pre-owned by nonroot. For bind mounts to a host directory, either `chown 65532:65532 capture` first, or switch to a named volume.
+
+### Backend in another container
+
+Put both on the same user-defined network and reach the backend by container name:
+
+```bash
+docker network create apis
+docker run -d --name backend --network apis your-api:latest
+docker run -d --name capture \
+  --network apis \
+  -p 9000:9000 \
+  -v rlc-data:/data \
+  ghcr.io/edthing/restlens-capture:latest \
+  proxy --target=http://backend:3000 --port=9000 --db=/data/capture.db
+```
+
+Clients outside docker hit `http://localhost:9000`; the proxy reaches the backend by its DNS name `backend:3000` on the shared network.
+
+### docker-compose
+
+```yaml
+services:
+  backend:
+    image: your-api:latest
+    expose: ["3000"]          # not published — proxy reaches it via compose DNS
+
+  capture:
+    image: ghcr.io/edthing/restlens-capture:latest
+    command:
+      - proxy
+      - --target=http://backend:3000
+      - --port=9000
+      - --db=/data/capture.db
+    ports: ["9000:9000"]       # clients talk to this one
+    volumes:
+      - rlc-data:/data
+    depends_on: [backend]
+
+volumes:
+  rlc-data:
+```
+
+### Reading the captured data
+
+`report` and `export` both read the same SQLite DB, so point another container at the same volume:
+
+```bash
+# Traffic summary
+docker run --rm -v rlc-data:/data \
+  ghcr.io/edthing/restlens-capture:latest \
+  report --db=/data/capture.db
+
+# OpenAPI 3.1 spec
+docker run --rm -v rlc-data:/data \
+  ghcr.io/edthing/restlens-capture:latest \
+  export --openapi --db=/data/capture.db > api.yaml
+```
+
+Or `exec` into the running proxy container directly:
+
+```bash
+docker exec capture /restlens-capture report --db=/data/capture.db
+```
 
 ## Kubernetes Sidecar
 
