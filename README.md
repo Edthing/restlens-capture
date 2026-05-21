@@ -111,6 +111,24 @@ Generates an OpenAPI 3.1 spec with:
 - Request/response schemas from captured body shapes
 - Observed status codes per endpoint
 
+### `export --to-restlens` — Upload to REST Lens
+
+Uploads the inferred API profile directly to a REST Lens project for evaluation
+(via `POST /api/projects/{org}/{project}/specifications`).
+
+```bash
+restlens-capture export --to-restlens \
+  --project my-org/my-project \
+  --token "$RESTLENS_TOKEN"
+```
+
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--project` | `RESTLENS_PROJECT` | Target project as `<org>/<project>` |
+| `--token` | `RESTLENS_TOKEN` | REST Lens project API token (create in project settings) |
+| `--server` | `RESTLENS_URL` / `RESTLENS_SERVER` | Base URL (default `https://restlens.com`) |
+| `--tag` | — | Optional version tag for the uploaded spec |
+
 ## Run with Docker
 
 The published image's entrypoint is the binary — everything after the image name is a normal CLI invocation.
